@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pixel Agents in a small always-on-top Electron window.
+# Usage: pixel-pin [workspace-dir]
+# Env:   PIXEL_PIN_PORT=3100 (optional fixed port; default is a free one)
+set -euo pipefail
+
+# Resolve the real location of this script, so a symlink in ~/.local/bin works.
+SELF="${BASH_SOURCE[0]}"
+[ -L "$SELF" ] && SELF="$(readlink "$SELF")"
+APP_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
+export PATH="/opt/homebrew/bin:$PATH"
+export PIXEL_PIN_WORKSPACE="${1:-$PWD}"
+
+[ -d "$PIXEL_PIN_WORKSPACE" ] || { echo "pixel-pin: no such directory: $PIXEL_PIN_WORKSPACE" >&2; exit 1; }
+[ -x "$APP_DIR/node_modules/.bin/electron" ] || { echo "pixel-pin: run 'npm install' in $APP_DIR first" >&2; exit 1; }
+
+exec "$APP_DIR/node_modules/.bin/electron" "$APP_DIR"
