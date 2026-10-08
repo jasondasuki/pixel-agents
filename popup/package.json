@@ -1,0 +1,13 @@
+{
+  "name": "pixel-agents-pin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Small always-on-top window for the Pixel Agents standalone office",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^44.7.0"
+  }
+}
