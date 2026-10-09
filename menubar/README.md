@@ -36,6 +36,9 @@ Quit from the dropdown (or `pkill -TERM PixelMenuBar`); that removes its registr
   The growing mode follows the session count
   (`laneWidth` in `Wanderer.swift`: 120pt, +30pt per extra session, capped at 320pt). Past the cap
   pets overlap, with the most urgent on top.
+- Idle sessions (waiting, done, fresh) are lazy: one slow walk, then 25 to 90 seconds of rest, and a pet that
+  just stopped working settles instead of walking on. Tuning is `calmPause`, `calmSpeed` and `calmLegs` in
+  `Wanderer.swift`.
 - Pets always wander in strolls of one to four legs, easing into and out of each walk, with long legs
   favoured so they cross the lane. Working and permission sessions scurry (short pauses, 2x speed, faster with
   tool-call rate); waiting and done sessions amble.
@@ -48,7 +51,8 @@ Quit from the dropdown (or `pkill -TERM PixelMenuBar`); that removes its registr
   exists, and stops while the display sleeps.
 - Sessions with no event for 30 minutes (60 when working) are dropped, since there is no
   transcript tailing to confirm they are alive.
-- Dropdown: project, state and current tool for each session, a Pet submenu (Mixed, claudio,
+- Dropdown: project, state and current model for each session (the model is read from the session's
+  transcript, since hook payloads do not carry it), a Pet submenu (Mixed, claudio,
   gitcat), and the read-only hook status.
 
 ## Layout

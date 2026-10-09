@@ -100,14 +100,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         registry.remove(pid: Int(getpid()))
     }
 
+    // MARK: model
+
+    private var modelCheckedAt: [String: Date] = [:]
+    private let modelQueue = DispatchQueue(label: "pixel-menubar.model", qos: .utility)
+    /// While a session's model is unknown, retry at most this often.
+    private static let modelRetry: TimeInterval = 10
+
+    /// Hook payloads do not name the model, so read it from the session's transcript: when the session
+    /// is first seen, and at turn boundaries, where a `/model` switch would show up.
+    private func updateModel(for hook: NormalizedHook) {
+        if case .sessionEnd = hook.event { modelCheckedAt[hook.sessionId] = nil; return }
+        guard let agent = store.agents[hook.sessionId], let path = agent.transcriptPath else { return }
+
+        var boundary = false
+        switch hook.event {
+        case .sessionStart, .turnEnd: boundary = true
+        default: break
+        }
+        let last = modelCheckedAt[hook.sessionId]
+        let due = boundary || (agent.model == nil && (last.map { Date().timeIntervalSince($0) > Self.modelRetry } ?? true))
+        guard due else { return }
+        modelCheckedAt[hook.sessionId] = Date()
+
+        let id = hook.sessionId
+        modelQueue.async { [weak self] in
+            let model = TranscriptModel.latest(inFileAt: path)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { _ = self?.store.setModel(model, forSession: id) }
+            }
+        }
+    }
+
     private func startServer() {
         let server = HookServer(token: token) { [weak self] hook in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.store.apply(hook)
+                self.updateModel(for: hook)
                 if self.debug {
                     let a = self.store.agents[hook.sessionId]
-                    self.log("hook \(hook.sessionId.prefix(8)) \(hook.event) -> state=\(a?.state.title ?? "gone") subagents=\(a?.subagents ?? 0) pets=\(self.store.petEntities().count)")
+                    self.log("hook \(hook.sessionId.prefix(8)) \(hook.event) -> state=\(a?.state.title ?? "gone") model=\(a?.modelName ?? "?") subagents=\(a?.subagents ?? 0) pets=\(self.store.petEntities().count)")
                 }
                 self.refresh()
             }

@@ -346,31 +346,67 @@ struct SeededRNG: RandomNumberGenerator {
         var w = Wanderer(x: 50, pause: 0)
         let range = 0.0...100.0
         var lo = w.x, hi = w.x
-        for _ in 0..<(30 * 180) {   // three minutes
-            w.step(dt: 1.0 / 30, busy: false, toolRate: 0, range: range, using: &rng)
+        for _ in 0..<(10 * 60 * 60) {   // an hour of idling
+            w.step(dt: 0.1, busy: false, toolRate: 0, range: range, using: &rng)
             lo = min(lo, w.x); hi = max(hi, w.x)
         }
         #expect(lo < 10)
         #expect(hi > 90)
     }
 
-    @Test func strollsChainLegsWithShortLookArounds() {
-        var rng = SeededRNG(state: 4)
-        var w = Wanderer(x: 0, pause: 0)
-        var pauses: [Double] = [], current = 0.0, wasWalking = false
-        for _ in 0..<(30 * 300) {
-            w.step(dt: 1.0 / 30, busy: false, toolRate: 0, range: 0...100, using: &rng)
+    /// Pauses (seconds standing still between walks) and the share of time spent walking.
+    private func restAndWalk(busy: Bool, minutes: Double, seed: UInt64) -> (pauses: [Double], walkShare: Double) {
+        var rng = SeededRNG(state: seed)
+        var w = Wanderer(x: 50, pause: 5)
+        var pauses: [Double] = [], current = 0.0, walked = 0.0, wasWalking = false
+        let dt = 0.1, steps = Int(minutes * 60 / dt)
+        for _ in 0..<steps {
+            w.step(dt: dt, busy: busy, toolRate: 0, range: 0...100, using: &rng)
             if w.walking {
                 if !wasWalking, current > 0 { pauses.append(current) }
-                current = 0
+                current = 0; walked += dt
             } else {
-                current += 1.0 / 30
+                current += dt
             }
             wasWalking = w.walking
         }
-        // Between legs of a stroll the pet pauses briefly; between strolls it rests longer.
-        #expect(pauses.contains { $0 < 1.2 })
-        #expect(pauses.contains { $0 > 3 })
+        return (pauses, walked / (Double(steps) * dt))
+    }
+
+    @Test func idlePetsLoafAround() {
+        let idle = restAndWalk(busy: false, minutes: 30, seed: 4)
+        // Rests are long (the first one is short by construction), and walking is a small share of the time.
+        #expect(idle.pauses.dropFirst().allSatisfy { $0 >= WanderTuning.calmPause.lowerBound - 0.2 })
+        #expect(idle.walkShare < 0.1)
+        let busy = restAndWalk(busy: true, minutes: 30, seed: 4)
+        #expect(busy.walkShare > idle.walkShare * 3)
+    }
+
+    @Test func idlePetsDoNotChainWalks() {
+        var rng = SeededRNG(state: 8)
+        var w = Wanderer(x: 0, pause: 0)
+        var walks = 0, wasWalking = false
+        for _ in 0..<(10 * 60 * 10) {   // 10 minutes
+            w.step(dt: 0.1, busy: false, toolRate: 0, range: 0...100, using: &rng)
+            if w.walking, !wasWalking { walks += 1 }
+            wasWalking = w.walking
+        }
+        // One walk, then at least 25s of rest each time: at most ~25 walks in 10 minutes, usually far fewer.
+        #expect(walks >= 1 && walks <= 25)
+    }
+
+    @Test func settlesWhenBusyEnds() {
+        var rng = SeededRNG(state: 2)
+        var w = Wanderer(x: 0, pause: 0)
+        // Busy for a while: short pauses between walks.
+        for _ in 0..<(30 * 10) { w.step(dt: 0.1, busy: true, toolRate: 0, range: 0...100, using: &rng) }
+        // Work stops. Let any walk in progress finish, then the pet must rest for a long time.
+        var restedSince = 0.0, longestRest = 0.0
+        for _ in 0..<(120 * 10) {
+            w.step(dt: 0.1, busy: false, toolRate: 0, range: 0...100, using: &rng)
+            if w.walking { restedSince = 0 } else { restedSince += 0.1; longestRest = max(longestRest, restedSince) }
+        }
+        #expect(longestRest >= WanderTuning.calmPause.lowerBound - 0.2)
     }
 
     @Test func walkFramesSpeedUpWithGroundSpeed() {
@@ -409,6 +445,60 @@ struct SeededRNG: RandomNumberGenerator {
         #expect(growingLaneWidth(agentCount: 1) == 120)
         #expect(growingLaneWidth(agentCount: 2) == 150)
         #expect(growingLaneWidth(agentCount: 500) == 320)
+    }
+}
+
+// MARK: Model
+
+@Suite struct ModelTests {
+    @Test func displayNames() {
+        #expect(ModelName.display("claude-sonnet-5-5") == "Sonnet 5.5")
+        #expect(ModelName.display("claude-opus-5-5") == "Opus 5.5")
+        #expect(ModelName.display("claude-fable-5-1") == "Fable 5.1")
+        #expect(ModelName.display("claude-haiku-5-5") == "Haiku 5.5")
+        #expect(ModelName.display("claude-opus-4-1-20250805") == "Opus 4.1")
+        #expect(ModelName.display("claude-sonnet-4-20250514") == "Sonnet 4")
+        #expect(ModelName.display("claude-3-5-sonnet-20241022") == "Sonnet 3.5")
+        #expect(ModelName.display("claude-opus-5-5[1m]") == "Opus 5.5 (1M)")
+        #expect(ModelName.display("us.anthropic.claude-sonnet-4-5-20250929-v1:0") == "Sonnet 4.5")
+        #expect(ModelName.display("gpt-4o") == "Gpt")
+        #expect(ModelName.display("1234") == "1234")
+    }
+
+    @Test func newestModelInTranscriptWins() {
+        let text = """
+        {"type":"user","message":{"content":"hi"}}
+        {"type":"assistant","message":{"model":"claude-opus-5-5","content":[]}}
+        {"type":"assistant","message":{"model":"claude-sonnet-5-5","content":[]}}
+        {"type":"assistant","message":{"model":"<synthetic>","content":[]}}
+        """
+        #expect(TranscriptModel.latest(inText: text) == "claude-sonnet-5-5")
+        #expect(TranscriptModel.latest(inText: "{\"type\":\"user\"}") == nil)
+    }
+
+    @Test func readsOnlyTheTailOfBigFiles() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("tr-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let old = "{\"message\":{\"model\":\"claude-opus-5-5\"}}\n"
+        let filler = String(repeating: "{\"type\":\"user\",\"x\":\"" + String(repeating: "a", count: 900) + "\"}\n", count: 600)
+        let new = "{\"message\":{\"model\":\"claude-sonnet-5-5\"}}\n"
+        try (old + filler + new).write(to: url, atomically: true, encoding: .utf8)
+        #expect(TranscriptModel.latest(inFileAt: url.path) == "claude-sonnet-5-5")
+        #expect(TranscriptModel.latest(inFileAt: "/nonexistent/file.jsonl") == nil)
+    }
+
+    @Test func storeKeepsModelPerSession() {
+        let store = AgentStore()
+        store.apply(NormalizedHook(sessionId: "m", cwd: "/z/m", transcriptPath: "/t/m.jsonl", event: .sessionStart), now: Date(timeIntervalSince1970: 0))
+        #expect(store.agents["m"]?.transcriptPath == "/t/m.jsonl")
+        #expect(store.agents["m"]?.modelName == nil)
+        #expect(store.setModel("claude-sonnet-5-5", forSession: "m"))
+        #expect(!store.setModel("claude-sonnet-5-5", forSession: "m"))
+        #expect(store.agents["m"]?.modelName == "Sonnet 5.5")
+        #expect(!store.setModel("claude-opus-5-5", forSession: "gone"))
+        // A later event without a transcript path keeps what is known.
+        store.apply(NormalizedHook(sessionId: "m", cwd: nil, event: .toolEnd), now: Date(timeIntervalSince1970: 1))
+        #expect(store.agents["m"]?.transcriptPath == "/t/m.jsonl")
     }
 }
 

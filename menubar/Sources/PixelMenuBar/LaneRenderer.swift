@@ -39,7 +39,7 @@ final class LaneRenderer {
         for agent in agents {
             var w = wanderers[agent.id] ?? Wanderer(
                 x: Double.random(in: range, using: &rng),
-                pause: Double.random(in: 0...2, using: &rng)
+                pause: Double.random(in: agent.state.isBusy ? 0...2 : WanderTuning.calmFirstPause, using: &rng)
             )
             w.step(dt: dt, busy: agent.state.isBusy, toolRate: agent.toolRate(now: now), range: range, using: &rng)
             wanderers[agent.id] = w
