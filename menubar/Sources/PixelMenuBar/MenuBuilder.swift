@@ -29,7 +29,7 @@ final class MenuBuilder {
         self.pickLaneAction = pickLaneAction
     }
 
-    func rebuild(_ menu: NSMenu, agents: [Agent]) {
+    func rebuild(_ menu: NSMenu, agents: [Agent], laneCap: Double?) {
         menu.removeAllItems()
 
         let header = NSMenuItem(title: agents.isEmpty ? "No active Claude sessions" : "\(agents.count) Claude session\(agents.count == 1 ? "" : "s")", action: nil, keyEquivalent: "")
@@ -65,7 +65,12 @@ final class MenuBuilder {
         let laneItem = NSMenuItem(title: "Lane width", action: nil, keyEquivalent: "")
         let laneMenu = NSMenu()
         for option in LaneSetting.presets {
-            let entry = NSMenuItem(title: option.title, action: pickLaneAction, keyEquivalent: "")
+            var title = option.title
+            // Say so when this screen cannot show the full width, instead of silently ignoring the choice.
+            if let laneCap, case let .fixed(width) = option, width > laneCap {
+                title += " (fits \(Int(laneCap)))"
+            }
+            let entry = NSMenuItem(title: title, action: pickLaneAction, keyEquivalent: "")
             entry.target = target
             entry.representedObject = NSNumber(value: option.stored)
             entry.state = option == laneSetting() ? .on : .off

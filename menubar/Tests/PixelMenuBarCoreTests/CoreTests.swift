@@ -214,6 +214,28 @@ private func apply(_ store: AgentStore, _ event: AgentEvent, session: String = "
         #expect(store.sorted().map(\.id) == ["b", "c", "a"])
     }
 
+    @Test func subagentsGetTheirOwnPets() {
+        let store = AgentStore()
+        apply(store, .turnEnd(awaitingInput: true), session: "p", cwd: "/z/p")
+        apply(store, .subagentStart, session: "p")
+        apply(store, .subagentStart, session: "p")
+        var pets = store.petEntities()
+        #expect(pets.map(\.id) == ["p", "p#0", "p#1"])
+        #expect(pets[1].state == .working && pets[2].state == .working)
+        #expect(pets[0].state == .waiting)
+        #expect(pets[1].project == pets[0].project)
+
+        apply(store, .subagentEnd, session: "p")
+        #expect(store.petEntities().map(\.id) == ["p", "p#0"])
+        // Finishing the turn clears any subagent whose stop never arrived.
+        apply(store, .turnEnd(awaitingInput: false), session: "p")
+        pets = store.petEntities()
+        #expect(pets.map(\.id) == ["p"])
+        // Sessions without subagents are untouched; no limit on how many.
+        for _ in 0..<40 { apply(store, .subagentStart, session: "q") }
+        #expect(store.petEntities().filter { $0.id.hasPrefix("q") }.count == 41)
+    }
+
     @Test func toolRateCountsRecentStartsOnly() {
         let store = AgentStore()
         for t in [0.0, 1, 2, 20] { apply(store, .toolStart(name: "Read", label: "r"), at: t) }

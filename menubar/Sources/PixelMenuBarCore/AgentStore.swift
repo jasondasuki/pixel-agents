@@ -92,6 +92,10 @@ public final class AgentStore {
         case let .turnEnd(awaitingInput):
             agent.state = awaitingInput ? .waiting : .done
             agent.label = ""
+            // A finished turn means its subagents are finished too; this keeps a missed
+            // SubagentStop from leaving a pet running forever. (Background subagents that
+            // outlive the turn lose their pet early.)
+            if !awaitingInput { agent.subagents = 0 }
         case .subagentStart:
             agent.subagents += 1
         case .subagentEnd:
@@ -112,6 +116,26 @@ public final class AgentStore {
         }.map(\.id)
         for id in stale { agents.removeValue(forKey: id) }
         return stale
+    }
+
+    /// Separator in a subagent pet's id: `<session id>#<n>`.
+    public static let subagentMarker: Character = "#"
+
+    /// What the lane draws: every session, plus one extra pet per running subagent.
+    /// Subagent pets copy their parent (same species) and always scurry, since a subagent is working.
+    public func petEntities() -> [Agent] {
+        sorted().flatMap { agent -> [Agent] in
+            guard agent.subagents > 0 else { return [agent] }
+            let subs = (0..<agent.subagents).map { i -> Agent in
+                var sub = agent
+                sub = Agent(id: "\(agent.id)\(Self.subagentMarker)\(i)", cwd: agent.cwd,
+                            lastEventAt: agent.lastEventAt, stateSince: agent.stateSince)
+                sub.state = .working
+                sub.toolStarts = agent.toolStarts
+                return sub
+            }
+            return [agent] + subs
+        }
     }
 
     /// Most urgent first, then by project name.

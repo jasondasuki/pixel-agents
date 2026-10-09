@@ -24,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var fitLimit: Double?
     private var lastLaneWidth = 0.0
     private var fitCheckPending = false
+    private var fitTimer: Timer?
+    /// Right edge of the item (screen x), measured while it is visible. Status items hug the system
+    /// icons, so this stays put as the lane grows; only the left edge moves.
+    private var rightEdge: Double?
+    private var edgeCandidate: Double?
     private let debug = ProcessInfo.processInfo.environment["PIXEL_MENUBAR_DEBUG"] != nil
 
     private static let tickInterval: TimeInterval = 1.0 / 12
@@ -37,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Measured on a notched MacBook: an item whose left edge is within ~22pt of the area macOS
     /// reports as usable (right of the notch) is still hidden. 28pt keeps clear of that.
     private static let fitMargin = 28.0
+    /// Frame width minus lane width (the status item's own padding), measured: 656 vs 640.
+    private static let itemPadding = 16.0
 
     private var choice: PetChoice {
         get { PetChoice(stored: UserDefaults.standard.string(forKey: Self.petDefaultsKey)) }
@@ -71,6 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         observeDisplaySleep()
         observeFrontmostApp()
 
+        // Layout settles asynchronously and other apps change the menu bar; keep re-checking cheaply.
+        fitTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkFit() }
+        }
+        scheduleFitCheck()
+
         expiryTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, !self.store.expireStale().isEmpty else { return }
@@ -88,8 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startServer() {
         let server = HookServer(token: token) { [weak self] hook in
             MainActor.assumeIsolated {
-                self?.store.apply(hook)
-                self?.refresh()
+                guard let self else { return }
+                self.store.apply(hook)
+                if self.debug {
+                    let a = self.store.agents[hook.sessionId]
+                    self.log("hook \(hook.sessionId.prefix(8)) \(hook.event) -> state=\(a?.state.title ?? "gone") subagents=\(a?.subagents ?? 0) pets=\(self.store.petEntities().count)")
+                }
+                self.refresh()
             }
         }
         self.server = server
@@ -180,13 +198,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func currentLaneWidth(agentCount: Int) -> Double {
         let screen = NSScreen.main?.frame.width ?? 1440
-        let limit = min(screen * Self.maxScreenShare, fitLimit ?? .infinity)
+        let limit = min(screen * Self.maxScreenShare, laneCap ?? .infinity, fitLimit ?? .infinity)
         return laneWidth(agentCount: agentCount, setting: laneSetting, screenLimit: limit)
     }
 
     /// Redraws now and starts or stops the animation clock to match the agent count.
     private func refresh() {
-        let agents = store.sorted()
+        let agents = store.petEntities()
         let width = currentLaneWidth(agentCount: agents.count)
         // Pets that just arrived need a position before their first frame.
         renderer.step(dt: 0, agents: agents, now: Date(), laneWidth: width)
@@ -229,7 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Menu bar hidden (full-screen app, locked screen): keep time moving, skip drawing.
         guard statusItem.button?.window?.occlusionState.contains(.visible) ?? true else { return }
 
-        let agents = store.sorted()
+        let agents = store.petEntities()
         let width = currentLaneWidth(agentCount: agents.count)
         renderer.step(dt: dt, agents: agents, now: now, laneWidth: width)
         let signature = renderer.signature(agents: agents, now: now, laneWidth: width)
@@ -251,14 +269,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// How far the item's window sticks out past the part of the menu bar it may use, in points
-    /// (negative = spare room). On a notched display status items live right of the notch, so that
-    /// area (not the whole screen) is the limit; the item sits right-aligned against the system icons,
-    /// so overflow shows up on its left edge.
+    /// Part of the menu bar a status item may use. On a notched display that is right of the notch.
+    private func usableArea(_ window: NSWindow) -> NSRect {
+        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        return screen.safeAreaInsets.top > 0 ? (screen.auxiliaryTopRightArea ?? screen.frame) : screen.frame
+    }
+
+    /// Widest lane that fits, from where the item's right edge sits and where usable space starts.
+    /// Known up front, so a wide choice is never drawn at a width that macOS would hide.
+    private var laneCap: Double? {
+        guard let rightEdge, let window = statusItem?.button?.window else { return nil }
+        let cap = rightEdge - usableArea(window).minX - Self.fitMargin - Self.itemPadding - 4
+        return max(Self.minFitWidth, cap)
+    }
+
+    /// How far the item's window sticks out past the usable area, in points (negative = spare room).
+    /// Overflow shows up on the left edge, since the item is right-aligned.
     private func excess() -> Double? {
         guard let window = statusItem.button?.window else { return nil }
-        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        let usable = screen.safeAreaInsets.top > 0 ? (screen.auxiliaryTopRightArea ?? screen.frame) : screen.frame
+        let usable = usableArea(window)
         let f = window.frame
         guard window.occlusionState.contains(.visible) else { return 0.2 * lastLaneWidth }
         return Double(max(usable.minX + Self.fitMargin - f.minX, f.maxX - usable.maxX))
@@ -266,22 +295,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func wantedLaneWidth() -> Double {
         let screen = NSScreen.main?.frame.width ?? 1440
-        return laneWidth(agentCount: store.agents.count, setting: laneSetting, screenLimit: screen * Self.maxScreenShare)
+        return laneWidth(agentCount: store.petEntities().count, setting: laneSetting,
+                         screenLimit: min(screen * Self.maxScreenShare, laneCap ?? .infinity))
     }
 
     private func checkFit() {
-        guard !store.agents.isEmpty, let excess = excess() else { return }
+        guard let excess = excess(), let window = statusItem.button?.window else { return }
         if debug {
-            let f = statusItem.button?.window?.frame ?? .zero
-            log("fit: lane=\(Int(lastLaneWidth)) excess=\(Int(excess)) limit=\(fitLimit.map { Int($0) } ?? -1) frame=\(f)")
+            log("fit: lane=\(Int(lastLaneWidth)) excess=\(Int(excess)) cap=\(laneCap.map { Int($0) } ?? -1) limit=\(fitLimit.map { Int($0) } ?? -1) frame=\(window.frame)")
         }
+
+        // While the item is fully shown and settled its right edge is trustworthy. A frame caught
+        // mid-resize is not: require the width to match the lane and two readings in a row to agree.
+        // Follow it if the system icons to its right change (a new menu bar item appears, ...).
+        let settled = abs(Double(window.frame.width) - (lastLaneWidth + Self.itemPadding)) < 1.5
+        if excess <= 0.5, settled {
+            let edge = Double(window.frame.maxX)
+            if let candidate = edgeCandidate, abs(candidate - edge) < 1, abs(edge - (rightEdge ?? .infinity)) > 1 {
+                let before = laneCap
+                rightEdge = edge
+                if laneCap != before { refresh() }
+            } else if rightEdge == nil, edgeCandidate == nil {
+                rightEdge = edge   // first sight, at launch: the sleeping pet is small and always placed
+                refresh()
+            }
+            edgeCandidate = edge
+        } else {
+            edgeCandidate = nil
+        }
+
+        guard !store.agents.isEmpty else { return }
         if excess > 0.5, lastLaneWidth > Self.minFitWidth {
-            // Take off exactly what overflows, plus a little slack for the item's own padding.
+            // Fallback if the cap was not known yet or was wrong: take off what overflows.
             fitLimit = max(Self.minFitWidth, lastLaneWidth - excess - 4)
             log("status item hidden at \(Int(lastLaneWidth))pt; shrinking lane to \(Int(fitLimit!))pt")
             refresh()   // width changed, so draw() schedules the next check
         } else if fitLimit != nil, -excess > 12, lastLaneWidth < wantedLaneWidth() - 0.5 {
-            // The first reading can come from an item that has not been placed yet and over-shrink; use spare room.
             let grown = lastLaneWidth - excess - 4
             fitLimit = grown >= wantedLaneWidth() ? nil : grown
             refresh()
@@ -298,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: menu
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menuBuilder.rebuild(menu, agents: store.sorted())
+        menuBuilder.rebuild(menu, agents: store.sorted(), laneCap: laneCap)
         if let serverError {
             let item = NSMenuItem(title: serverError, action: nil, keyEquivalent: "")
             item.isEnabled = false
