@@ -33,6 +33,11 @@ public struct Agent {
     public var cwd: String?
     public var state: AgentState = .idle
     public var label: String = ""
+    /// Where this session's transcript lives, from the hook payloads.
+    public var transcriptPath: String?
+    /// Raw model id read from the transcript, e.g. "claude-sonnet-5-5".
+    public var model: String?
+    public var modelName: String? { model.map(ModelName.display) }
     /// When each running subagent started, oldest first. A subagent lives until its own
     /// SubagentStop (it can outlive the parent's turn), or `AgentStore.subagentExpiry`.
     var subagentStarts: [Date] = []
@@ -75,6 +80,7 @@ public final class AgentStore {
         // Hooks installed after a session started: adopt it on first sight.
         var agent = agents[hook.sessionId] ?? Agent(id: hook.sessionId, cwd: hook.cwd, lastEventAt: now, stateSince: now)
         if let cwd = hook.cwd, !cwd.isEmpty { agent.cwd = cwd }
+        if let path = hook.transcriptPath, !path.isEmpty { agent.transcriptPath = path }
         agent.lastEventAt = now
 
         let before = agent.state
@@ -107,6 +113,15 @@ public final class AgentStore {
         }
         if agent.state != before { agent.stateSince = now }
         agents[hook.sessionId] = agent
+    }
+
+    /// Records the model read from a session's transcript. Returns true if it changed.
+    @discardableResult
+    public func setModel(_ model: String?, forSession id: String) -> Bool {
+        guard var agent = agents[id], let model, agent.model != model else { return false }
+        agent.model = model
+        agents[id] = agent
+        return true
     }
 
     /// Drops subagents that have run suspiciously long. Returns true if any pet went away.

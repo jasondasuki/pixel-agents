@@ -101,8 +101,8 @@ final class MenuBuilder {
         )
         let stateColor: NSColor = agent.state == .permission ? .systemOrange : .secondaryLabelColor
         out.append(NSAttributedString(string: "  \u{00B7}  \(agent.state.title)", attributes: [.font: font, .foregroundColor: stateColor]))
-        if !agent.label.isEmpty {
-            out.append(NSAttributedString(string: "  \u{00B7}  \(agent.label)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        if let model = agent.modelName {
+            out.append(NSAttributedString(string: "  \u{00B7}  \(model)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         }
         if agent.subagents > 0 {
             out.append(NSAttributedString(string: "  (+\(agent.subagents) subagent\(agent.subagents == 1 ? "" : "s"))", attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))

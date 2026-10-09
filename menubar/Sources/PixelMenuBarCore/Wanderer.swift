@@ -10,7 +10,10 @@ public enum WanderTuning {
     public static let walkFrameDuration = 0.15
     public static let idleFrameDuration = 0.3
 
-    public static let calmSpeed = 32.0
+    /// Ground speed the walk frames are drawn for; slower or faster walks scale the feet to match.
+    public static let referenceSpeed = 32.0
+    /// Idle sessions amble slowly, like they would rather not.
+    public static let calmSpeed = 20.0
     public static let busyBaseSpeed = 64.0
     public static let busyMaxSpeed = 96.0
     /// Each leg's cruise speed varies by this much, so no two walks look the same.
@@ -21,11 +24,14 @@ public enum WanderTuning {
     /// Below this the walk is a shuffle; the pet settles instead of creeping the last point.
     public static let minWalkSpeed = 8.0
 
-    public static let calmPause: ClosedRange<Double> = 1.5...9.0
+    /// Idle sessions rest a long time between walks, so the pet looks lazy.
+    public static let calmPause: ClosedRange<Double> = 25.0...90.0
+    /// First rest of a pet that appears while its session is idle.
+    public static let calmFirstPause: ClosedRange<Double> = 10.0...40.0
     public static let busyPause: ClosedRange<Double> = 0.4...1.6
     /// Short look-around between the legs of one stroll.
     public static let betweenLegs: ClosedRange<Double> = 0.3...1.0
-    public static let calmLegs = 1...3
+    public static let calmLegs = 1...1
     public static let busyLegs = 2...4
 
     /// A leg covers at least this share of the walkable span (when there is room).
@@ -44,6 +50,7 @@ public struct Wanderer {
     private var cruise = 0.0
     private var target: Double
     private var legsLeft = 0
+    private var wasBusy = false
     private var pauseLeft: Double
     private var animTime = 0.0
 
@@ -74,6 +81,12 @@ public struct Wanderer {
         // Lane can shrink under a pet when agents leave.
         x = min(max(x, range.lowerBound), range.upperBound)
 
+        // Work just ended: a short busy-time pause becomes a long rest instead of one more quick walk.
+        if wasBusy, !busy, !walking {
+            pauseLeft = max(pauseLeft, Double.random(in: WanderTuning.calmPause, using: &rng))
+        }
+        wasBusy = busy
+
         if walking {
             walk(dt: dt, busy: busy, range: range, using: &rng)
         } else {
@@ -100,7 +113,7 @@ public struct Wanderer {
         }
 
         // Feet follow the ground: frame rate scales with speed.
-        animTime += dt * max(speed, WanderTuning.minWalkSpeed) / WanderTuning.calmSpeed
+        animTime += dt * max(speed, WanderTuning.minWalkSpeed) / WanderTuning.referenceSpeed
 
         let move = speed * dt
         if move >= remaining {
@@ -115,7 +128,7 @@ public struct Wanderer {
         walking = false
         speed = 0
         animTime = 0
-        legsLeft -= 1
+        legsLeft = busy ? legsLeft - 1 : 0   // an idle pet does not chain walks
         pauseLeft = legsLeft > 0
             ? Double.random(in: WanderTuning.betweenLegs, using: &rng)
             : Double.random(in: busy ? WanderTuning.busyPause : WanderTuning.calmPause, using: &rng)

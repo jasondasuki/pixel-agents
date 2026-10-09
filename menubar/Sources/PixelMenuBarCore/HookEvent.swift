@@ -16,11 +16,13 @@ public enum AgentEvent: Equatable {
 public struct NormalizedHook: Equatable {
     public let sessionId: String
     public let cwd: String?
+    public let transcriptPath: String?
     public let event: AgentEvent
 
-    public init(sessionId: String, cwd: String?, event: AgentEvent) {
+    public init(sessionId: String, cwd: String?, transcriptPath: String? = nil, event: AgentEvent) {
         self.sessionId = sessionId
         self.cwd = cwd
+        self.transcriptPath = transcriptPath
         self.event = event
     }
 }
@@ -33,9 +35,10 @@ public func normalizeHookEvent(_ raw: [String: Any]) -> NormalizedHook? {
           let sessionId = raw["session_id"] as? String, !sessionId.isEmpty
     else { return nil }
     let cwd = raw["cwd"] as? String
+    let transcriptPath = raw["transcript_path"] as? String
 
     func make(_ event: AgentEvent) -> NormalizedHook {
-        NormalizedHook(sessionId: sessionId, cwd: cwd, event: event)
+        NormalizedHook(sessionId: sessionId, cwd: cwd, transcriptPath: transcriptPath, event: event)
     }
 
     switch name {
