@@ -28,9 +28,11 @@ Quit from the dropdown (or `pkill -TERM PixelMenuBar`); that removes its registr
 
 - One pet per session, no limit. They share one lane. By default it is a fixed 320pt wide while any
   session exists; the Lane width submenu offers 160, 240, 480 and 640pt, or "Grow with sessions"
-  (below). No choice takes more than 40% of the screen width, and the app measures where macOS actually
-  placed the item: on a notched MacBook items must sit right of the notch, so a wide lane is shrunk to fit
-  (and grown back when there is room) rather than being hidden by the system.
+  (below). No choice takes more than 40% of the screen width. On a notched MacBook, macOS only shows
+  status items right of the notch, so the app works out the widest lane that fits (from the item's
+  right edge and where the notch area starts, ~426pt on a 14" screen) and caps every choice to it; the
+  submenu labels the ones that can't be shown in full, e.g. "640 pt (fits 426)". If macOS hides the
+  item anyway, it shrinks the lane until the item shows, and re-checks every 3 seconds.
   The growing mode follows the session count
   (`laneWidth` in `Wanderer.swift`: 120pt, +30pt per extra session, capped at 320pt). Past the cap
   pets overlap, with the most urgent on top.

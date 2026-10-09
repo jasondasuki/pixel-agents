@@ -24,8 +24,10 @@ final class LaneRenderer {
 
     func petFor(agentId: String, choice: PetChoice) -> PetSprites? {
         guard !pets.isEmpty else { return nil }
+        // A subagent ("<session>#<n>") wears its parent's pet.
+        let parent = agentId.split(separator: AgentStore.subagentMarker, maxSplits: 1).first.map(String.init) ?? agentId
         switch choice {
-        case .mixed: return pets[Int(stableHash(agentId) % UInt64(pets.count))]
+        case .mixed: return pets[Int(stableHash(parent) % UInt64(pets.count))]
         case let .named(name): return pets.first { $0.name == name } ?? pets[0]
         }
     }
