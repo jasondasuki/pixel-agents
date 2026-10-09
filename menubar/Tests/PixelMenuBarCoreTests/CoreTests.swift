@@ -227,10 +227,22 @@ private func apply(_ store: AgentStore, _ event: AgentEvent, session: String = "
 
         apply(store, .subagentEnd, session: "p")
         #expect(store.petEntities().map(\.id) == ["p", "p#0"])
-        // Finishing the turn clears any subagent whose stop never arrived.
+        // A subagent outlives the parent's turn: it keeps its pet until its own SubagentStop.
         apply(store, .turnEnd(awaitingInput: false), session: "p")
         pets = store.petEntities()
-        #expect(pets.map(\.id) == ["p"])
+        #expect(pets.map(\.id) == ["p", "p#0"])
+        #expect(pets[0].state == .done && pets[1].state == .working)
+        apply(store, .turnEnd(awaitingInput: true), session: "p")
+        #expect(store.petEntities().count == 2)
+        apply(store, .subagentEnd, session: "p")
+        #expect(store.petEntities().map(\.id) == ["p"])
+
+        // A stop that never arrives is cleaned up by the backstop.
+        apply(store, .subagentStart, session: "p", at: 100)
+        #expect(!store.pruneSubagents(now: Date(timeIntervalSince1970: 100 + AgentStore.subagentExpiry - 1)))
+        #expect(store.pruneSubagents(now: Date(timeIntervalSince1970: 100 + AgentStore.subagentExpiry + 1)))
+        #expect(store.petEntities().map(\.id) == ["p"])
+
         // Sessions without subagents are untouched; no limit on how many.
         for _ in 0..<40 { apply(store, .subagentStart, session: "q") }
         #expect(store.petEntities().filter { $0.id.hasPrefix("q") }.count == 41)
