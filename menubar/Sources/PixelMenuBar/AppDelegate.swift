@@ -407,7 +407,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resetFit()
     }
 
+    private static let logTime: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     private func log(_ message: String) {
-        FileHandle.standardError.write(Data("[PixelMenuBar] \(message)\n".utf8))
+        FileHandle.standardError.write(Data("[PixelMenuBar \(Self.logTime.string(from: Date()))] \(message)\n".utf8))
     }
 }

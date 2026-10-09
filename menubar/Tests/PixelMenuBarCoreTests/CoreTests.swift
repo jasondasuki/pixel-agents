@@ -36,6 +36,14 @@ private func hook(_ name: String, extra: [String: Any] = [:]) -> [String: Any] {
         #expect(n?.sessionId == "s1")
     }
 
+    @Test func agentIdMarksSubagentEvents() {
+        #expect(normalizeHookEvent(hook("PreToolUse", extra: ["tool_name": "Read", "agent_id": "a123"]))?.agentId == "a123")
+        #expect(normalizeHookEvent(hook("SubagentStart", extra: ["agent_id": "a123", "agent_type": "Explore"]))?.agentId == "a123")
+        #expect(normalizeHookEvent(hook("SubagentStop", extra: ["agent_id": "a123"]))?.agentId == "a123")
+        #expect(normalizeHookEvent(hook("PreToolUse", extra: ["tool_name": "Read"]))?.agentId == nil)
+        #expect(normalizeHookEvent(hook("PreToolUse", extra: ["tool_name": "Read", "agent_id": ""]))?.agentId == nil)
+    }
+
     @Test func ignoresWhatItShould() {
         for name in ["UserPromptSubmit", "TaskCreated", "TeammateIdle", "TaskCompleted", "Mystery"] {
             #expect(normalizeHookEvent(hook(name)) == nil)
@@ -147,8 +155,8 @@ private func request(method: String = "POST", path: String = HookRequestHandler.
 
 // MARK: AgentStore
 
-private func apply(_ store: AgentStore, _ event: AgentEvent, session: String = "s1", cwd: String? = "/work/api", at t: TimeInterval = 0) {
-    store.apply(NormalizedHook(sessionId: session, cwd: cwd, event: event), now: Date(timeIntervalSince1970: t))
+private func apply(_ store: AgentStore, _ event: AgentEvent, session: String = "s1", cwd: String? = "/work/api", agent: String? = nil, at t: TimeInterval = 0) {
+    store.apply(NormalizedHook(sessionId: session, cwd: cwd, agentId: agent, event: event), now: Date(timeIntervalSince1970: t))
 }
 
 @Suite struct AgentStoreTests {
@@ -186,13 +194,15 @@ private func apply(_ store: AgentStore, _ event: AgentEvent, session: String = "
         #expect(store.agents["s1"]?.state == .done)
     }
 
-    @Test func subagentCounterNeverGoesNegative() {
+    @Test func subagentStopWithoutStartChangesNothing() {
         let store = AgentStore()
-        apply(store, .subagentEnd)
+        apply(store, .subagentEnd, session: "s1", agent: "ghost")
+        apply(store, .subagentEnd, session: "s1")
         #expect(store.agents["s1"]?.subagents == 0)
+        // Without an agent_id (not seen in practice) starts and stops pair up first in, first out.
         apply(store, .subagentStart)
-        apply(store, .subagentStart)
-        apply(store, .subagentEnd)
+        apply(store, .subagentStart, at: 1)
+        apply(store, .subagentEnd, at: 2)
         #expect(store.agents["s1"]?.subagents == 1)
     }
 
@@ -217,35 +227,72 @@ private func apply(_ store: AgentStore, _ event: AgentEvent, session: String = "
     @Test func subagentsGetTheirOwnPets() {
         let store = AgentStore()
         apply(store, .turnEnd(awaitingInput: true), session: "p", cwd: "/z/p")
-        apply(store, .subagentStart, session: "p")
-        apply(store, .subagentStart, session: "p")
+        apply(store, .subagentStart, session: "p", agent: "a1", at: 1)
+        apply(store, .subagentStart, session: "p", agent: "a2", at: 2)
         var pets = store.petEntities()
-        #expect(pets.map(\.id) == ["p", "p#0", "p#1"])
+        #expect(pets.map(\.id) == ["p", "p#a1", "p#a2"])
         #expect(pets[1].state == .working && pets[2].state == .working)
         #expect(pets[0].state == .waiting)
         #expect(pets[1].project == pets[0].project)
 
-        apply(store, .subagentEnd, session: "p")
-        #expect(store.petEntities().map(\.id) == ["p", "p#0"])
+        // Stopping one leaves the other, and the survivor keeps its id (so its pet keeps its place).
+        apply(store, .subagentEnd, session: "p", agent: "a1", at: 3)
+        #expect(store.petEntities().map(\.id) == ["p", "p#a2"])
         // A subagent outlives the parent's turn: it keeps its pet until its own SubagentStop.
-        apply(store, .turnEnd(awaitingInput: false), session: "p")
+        apply(store, .turnEnd(awaitingInput: false), session: "p", at: 4)
         pets = store.petEntities()
-        #expect(pets.map(\.id) == ["p", "p#0"])
+        #expect(pets.map(\.id) == ["p", "p#a2"])
         #expect(pets[0].state == .done && pets[1].state == .working)
-        apply(store, .turnEnd(awaitingInput: true), session: "p")
+        apply(store, .turnEnd(awaitingInput: true), session: "p", at: 5)
         #expect(store.petEntities().count == 2)
-        apply(store, .subagentEnd, session: "p")
+        apply(store, .subagentEnd, session: "p", agent: "a2", at: 6)
         #expect(store.petEntities().map(\.id) == ["p"])
 
-        // A stop that never arrives is cleaned up by the backstop.
-        apply(store, .subagentStart, session: "p", at: 100)
-        #expect(!store.pruneSubagents(now: Date(timeIntervalSince1970: 100 + AgentStore.subagentExpiry - 1)))
-        #expect(store.pruneSubagents(now: Date(timeIntervalSince1970: 100 + AgentStore.subagentExpiry + 1)))
-        #expect(store.petEntities().map(\.id) == ["p"])
-
-        // Sessions without subagents are untouched; no limit on how many.
-        for _ in 0..<40 { apply(store, .subagentStart, session: "q") }
+        // No limit on how many.
+        for i in 0..<40 { apply(store, .subagentStart, session: "q", agent: "x\(i)", at: 10) }
         #expect(store.petEntities().filter { $0.id.hasPrefix("q") }.count == 41)
+    }
+
+    @Test func subagentsAreTrackedByIdentity() {
+        let store = AgentStore()
+        // The start was missed (app launched mid-run): its first tool call is enough.
+        apply(store, .toolStart(name: "Read", label: "r"), session: "p", agent: "late", at: 1)
+        #expect(store.petEntities().map(\.id) == ["p", "p#late"])
+
+        // Extra stops for ids we never saw (an agent reused via SendMessage, or started before the app)
+        // must not remove anyone else's pet. This is what a counter got wrong.
+        apply(store, .subagentEnd, session: "p", agent: "unknown1", at: 2)
+        apply(store, .subagentEnd, session: "p", agent: "unknown2", at: 3)
+        #expect(store.agents["p"]?.subagents == 1)
+
+        // Its own stop removes it; a late tool event right after does not bring it back...
+        apply(store, .subagentEnd, session: "p", agent: "late", at: 4)
+        apply(store, .toolEnd, session: "p", agent: "late", at: 5)
+        #expect(store.agents["p"]?.subagents == 0)
+        // ...but when the agent is reused and works again later, it does.
+        apply(store, .toolStart(name: "Bash", label: "b"), session: "p", agent: "late", at: 60)
+        #expect(store.agents["p"]?.subagents == 1)
+    }
+
+    @Test func subagentToolCallsDoNotWakeTheParent() {
+        let store = AgentStore()
+        apply(store, .turnEnd(awaitingInput: false), session: "p", at: 0)
+        for t in 1...5 { apply(store, .toolStart(name: "Read", label: "sub work"), session: "p", agent: "a1", at: Double(t)) }
+        #expect(store.agents["p"]?.state == .done)
+        #expect(store.agents["p"]?.label == "")
+        #expect(store.agents["p"]?.subagents == 1)
+        // The parent's own tool calls still do.
+        apply(store, .toolStart(name: "Read", label: "mine"), session: "p", at: 6)
+        #expect(store.agents["p"]?.state == .working)
+    }
+
+    @Test func silentSubagentsAreDropped() {
+        let store = AgentStore()
+        apply(store, .subagentStart, session: "p", agent: "a1", at: 100)
+        apply(store, .toolStart(name: "Read", label: "r"), session: "p", agent: "a1", at: 500)   // still alive
+        #expect(!store.pruneSubagents(now: Date(timeIntervalSince1970: 500 + AgentStore.subagentExpiry - 1)))
+        #expect(store.pruneSubagents(now: Date(timeIntervalSince1970: 500 + AgentStore.subagentExpiry + 1)))
+        #expect(store.agents["p"]?.subagents == 0)
     }
 
     @Test func toolRateCountsRecentStartsOnly() {

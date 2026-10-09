@@ -42,9 +42,12 @@ Quit from the dropdown (or `pkill -TERM PixelMenuBar`); that removes its registr
 - Pets always wander in strolls of one to four legs, easing into and out of each walk, with long legs
   favoured so they cross the lane. Working and permission sessions scurry (short pauses, 2x speed, faster with
   tool-call rate); waiting and done sessions amble.
-- Every running subagent gets its own pet (same species as its session, always scurrying) and keeps it
-  until its own SubagentStop, even after the parent session has gone idle. A subagent whose stop never
-  arrives is dropped after 15 minutes.
+- Every running subagent gets its own pet (same species as its session, always scurrying). Subagents are
+  tracked by `agent_id`, which every hook event from a subagent carries: a pet appears on SubagentStart or,
+  if the app missed that (it launched mid-run, or the agent is being reused via SendMessage), on the
+  subagent's first tool call, and goes away on that agent's own SubagentStop. A subagent's tool calls do not
+  wake its parent, so a parent that is idle shows as idle while its subagents scurry. A subagent that goes
+  silent for 15 minutes is dropped.
 - Badges: a blinking amber `!` for a permission prompt, green `...` when Claude is waiting for you.
   Done sessions dim after a minute.
 - With no sessions, one dim pet sleeps and nothing ticks. The 12 fps clock runs only while a session

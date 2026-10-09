@@ -28,6 +28,11 @@ public enum AgentState: Int, Comparable {
     public var isBusy: Bool { self == .working || self == .permission }
 }
 
+struct SubagentInfo {
+    var firstSeen: Date
+    var lastSeen: Date
+}
+
 public struct Agent {
     public let id: String
     public var cwd: String?
@@ -38,10 +43,13 @@ public struct Agent {
     /// Raw model id read from the transcript, e.g. "claude-sonnet-5-5".
     public var model: String?
     public var modelName: String? { model.map(ModelName.display) }
-    /// When each running subagent started, oldest first. A subagent lives until its own
-    /// SubagentStop (it can outlive the parent's turn), or `AgentStore.subagentExpiry`.
-    var subagentStarts: [Date] = []
-    public var subagents: Int { subagentStarts.count }
+    /// Running subagents by `agent_id`. A subagent lives from its first sighting (SubagentStart, or
+    /// any of its tool calls if the start was missed) until its own SubagentStop, even past the
+    /// parent's turn; it is dropped if it goes silent for `AgentStore.subagentExpiry`.
+    var subagentInfo: [String: SubagentInfo] = [:]
+    /// Recently stopped subagents, so a late event from one does not bring its pet back.
+    var subagentEnded: [String: Date] = [:]
+    public var subagents: Int { subagentInfo.count }
     public var lastEventAt: Date
     public var stateSince: Date
     var toolStarts: [Date] = []
@@ -50,6 +58,18 @@ public struct Agent {
         guard let cwd, !cwd.isEmpty else { return String(id.prefix(8)) }
         let base = (cwd as NSString).lastPathComponent
         return base.isEmpty ? cwd : base
+    }
+
+    /// Marks a subagent as alive now, adding it if new, unless it only just stopped.
+    mutating func touchSubagent(_ id: String, now: Date) {
+        if let ended = subagentEnded[id], now.timeIntervalSince(ended) < AgentStore.subagentEndedGrace { return }
+        subagentEnded.removeValue(forKey: id)
+        if var info = subagentInfo[id] {
+            info.lastSeen = now
+            subagentInfo[id] = info
+        } else {
+            subagentInfo[id] = SubagentInfo(firstSeen: now, lastSeen: now)
+        }
     }
 
     /// Tool starts in the last `window` seconds.
@@ -68,6 +88,8 @@ public final class AgentStore {
     public static let busyExpiry: TimeInterval = 60 * 60
     /// Backstop for a SubagentStop that never arrives.
     public static let subagentExpiry: TimeInterval = 15 * 60
+    /// A stopped subagent's late events are ignored for this long.
+    static let subagentEndedGrace: TimeInterval = 5
 
     public init() {}
 
@@ -83,12 +105,38 @@ public final class AgentStore {
         if let path = hook.transcriptPath, !path.isEmpty { agent.transcriptPath = path }
         agent.lastEventAt = now
 
+        // Events from a subagent say which subagent is alive. They never change the parent's own
+        // state: the parent may be idle while its subagents work.
+        if let sub = hook.agentId {
+            switch hook.event {
+            case .subagentEnd:
+                agent.subagentInfo.removeValue(forKey: sub)
+                agent.subagentEnded[sub] = now
+                agents[hook.sessionId] = agent
+                return
+            case .subagentStart:
+                agent.subagentEnded.removeValue(forKey: sub)
+                agent.touchSubagent(sub, now: now)
+            case .toolStart, .toolEnd:
+                agent.touchSubagent(sub, now: now)
+                if case .toolStart = hook.event {
+                    agent.toolStarts.append(now)
+                    agent.toolStarts.removeAll { now.timeIntervalSince($0) > 60 }
+                }
+                agents[hook.sessionId] = agent
+                return
+            default:
+                agent.touchSubagent(sub, now: now)
+            }
+        }
+
         let before = agent.state
         switch hook.event {
         case .sessionStart:
             agent.state = .idle
             agent.label = ""
-            agent.subagentStarts = []
+            agent.subagentInfo = [:]
+            agent.subagentEnded = [:]
             agent.toolStarts = []
         case let .toolStart(_, label):
             agent.state = .working
@@ -105,9 +153,12 @@ public final class AgentStore {
             agent.label = ""
             // Subagents are left alone: background ones keep running after the parent goes idle.
         case .subagentStart:
-            agent.subagentStarts.append(now)
+            // No agent_id (not seen in practice): count it under a made-up id.
+            if hook.agentId == nil { agent.touchSubagent("anon-\(now.timeIntervalSince1970)-\(agent.subagentInfo.count)", now: now) }
         case .subagentEnd:
-            if !agent.subagentStarts.isEmpty { agent.subagentStarts.removeFirst() }
+            if hook.agentId == nil, let oldest = agent.subagentInfo.filter({ $0.key.hasPrefix("anon-") }).min(by: { $0.value.firstSeen < $1.value.firstSeen }) {
+                agent.subagentInfo.removeValue(forKey: oldest.key)
+            }
         case .sessionEnd:
             break
         }
@@ -130,11 +181,14 @@ public final class AgentStore {
         var changed = false
         for id in Array(agents.keys) {
             guard var agent = agents[id] else { continue }
-            let kept = agent.subagentStarts.filter { now.timeIntervalSince($0) <= Self.subagentExpiry }
-            if kept.count != agent.subagentStarts.count {
-                agent.subagentStarts = kept
+            let kept = agent.subagentInfo.filter { now.timeIntervalSince($0.value.lastSeen) <= Self.subagentExpiry }
+            agent.subagentEnded = agent.subagentEnded.filter { now.timeIntervalSince($0.value) < Self.subagentEndedGrace }
+            if kept.count != agent.subagentInfo.count {
+                agent.subagentInfo = kept
                 agents[id] = agent
                 changed = true
+            } else {
+                agents[id] = agent
             }
         }
         return changed
@@ -159,9 +213,11 @@ public final class AgentStore {
     public func petEntities() -> [Agent] {
         sorted().flatMap { agent -> [Agent] in
             guard agent.subagents > 0 else { return [agent] }
-            let subs = (0..<agent.subagents).map { i -> Agent in
+            // Oldest first, so a pet keeps its place in the order as others come and go.
+            let ordered = agent.subagentInfo.sorted { ($0.value.firstSeen, $0.key) < ($1.value.firstSeen, $1.key) }
+            let subs = ordered.map { (id, _) -> Agent in
                 var sub = agent
-                sub = Agent(id: "\(agent.id)\(Self.subagentMarker)\(i)", cwd: agent.cwd,
+                sub = Agent(id: "\(agent.id)\(Self.subagentMarker)\(id)", cwd: agent.cwd,
                             lastEventAt: agent.lastEventAt, stateSince: agent.stateSince)
                 sub.state = .working
                 sub.toolStarts = agent.toolStarts
