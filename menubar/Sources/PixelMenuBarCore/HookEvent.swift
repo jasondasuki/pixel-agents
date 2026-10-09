@@ -17,12 +17,16 @@ public struct NormalizedHook: Equatable {
     public let sessionId: String
     public let cwd: String?
     public let transcriptPath: String?
+    /// Set when the event comes from a subagent (its tool calls, SubagentStart, SubagentStop).
+    /// The main session's own events have none.
+    public let agentId: String?
     public let event: AgentEvent
 
-    public init(sessionId: String, cwd: String?, transcriptPath: String? = nil, event: AgentEvent) {
+    public init(sessionId: String, cwd: String?, transcriptPath: String? = nil, agentId: String? = nil, event: AgentEvent) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.transcriptPath = transcriptPath
+        self.agentId = agentId
         self.event = event
     }
 }
@@ -36,9 +40,10 @@ public func normalizeHookEvent(_ raw: [String: Any]) -> NormalizedHook? {
     else { return nil }
     let cwd = raw["cwd"] as? String
     let transcriptPath = raw["transcript_path"] as? String
+    let agentId = (raw["agent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
 
     func make(_ event: AgentEvent) -> NormalizedHook {
-        NormalizedHook(sessionId: sessionId, cwd: cwd, transcriptPath: transcriptPath, event: event)
+        NormalizedHook(sessionId: sessionId, cwd: cwd, transcriptPath: transcriptPath, agentId: agentId, event: event)
     }
 
     switch name {
