@@ -86,8 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         expiryTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, !self.store.expireStale().isEmpty else { return }
-                self.refresh()
+                guard let self else { return }
+                let removed = !self.store.expireStale().isEmpty
+                let pruned = self.store.pruneSubagents()
+                if removed || pruned { self.refresh() }
             }
         }
         refresh()

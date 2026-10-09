@@ -33,7 +33,10 @@ public struct Agent {
     public var cwd: String?
     public var state: AgentState = .idle
     public var label: String = ""
-    public var subagents: Int = 0
+    /// When each running subagent started, oldest first. A subagent lives until its own
+    /// SubagentStop (it can outlive the parent's turn), or `AgentStore.subagentExpiry`.
+    var subagentStarts: [Date] = []
+    public var subagents: Int { subagentStarts.count }
     public var lastEventAt: Date
     public var stateSince: Date
     var toolStarts: [Date] = []
@@ -58,6 +61,8 @@ public final class AgentStore {
     public static let quietExpiry: TimeInterval = 30 * 60
     /// Working and permission sessions get longer, since a tool call can run for a long time.
     public static let busyExpiry: TimeInterval = 60 * 60
+    /// Backstop for a SubagentStop that never arrives.
+    public static let subagentExpiry: TimeInterval = 15 * 60
 
     public init() {}
 
@@ -77,7 +82,7 @@ public final class AgentStore {
         case .sessionStart:
             agent.state = .idle
             agent.label = ""
-            agent.subagents = 0
+            agent.subagentStarts = []
             agent.toolStarts = []
         case let .toolStart(_, label):
             agent.state = .working
@@ -92,19 +97,32 @@ public final class AgentStore {
         case let .turnEnd(awaitingInput):
             agent.state = awaitingInput ? .waiting : .done
             agent.label = ""
-            // A finished turn means its subagents are finished too; this keeps a missed
-            // SubagentStop from leaving a pet running forever. (Background subagents that
-            // outlive the turn lose their pet early.)
-            if !awaitingInput { agent.subagents = 0 }
+            // Subagents are left alone: background ones keep running after the parent goes idle.
         case .subagentStart:
-            agent.subagents += 1
+            agent.subagentStarts.append(now)
         case .subagentEnd:
-            agent.subagents = max(0, agent.subagents - 1)
+            if !agent.subagentStarts.isEmpty { agent.subagentStarts.removeFirst() }
         case .sessionEnd:
             break
         }
         if agent.state != before { agent.stateSince = now }
         agents[hook.sessionId] = agent
+    }
+
+    /// Drops subagents that have run suspiciously long. Returns true if any pet went away.
+    @discardableResult
+    public func pruneSubagents(now: Date = Date()) -> Bool {
+        var changed = false
+        for id in Array(agents.keys) {
+            guard var agent = agents[id] else { continue }
+            let kept = agent.subagentStarts.filter { now.timeIntervalSince($0) <= Self.subagentExpiry }
+            if kept.count != agent.subagentStarts.count {
+                agent.subagentStarts = kept
+                agents[id] = agent
+                changed = true
+            }
+        }
+        return changed
     }
 
     /// Drops sessions that have gone quiet. Returns the removed ids.

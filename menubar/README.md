@@ -39,6 +39,9 @@ Quit from the dropdown (or `pkill -TERM PixelMenuBar`); that removes its registr
 - Pets always wander in strolls of one to four legs, easing into and out of each walk, with long legs
   favoured so they cross the lane. Working and permission sessions scurry (short pauses, 2x speed, faster with
   tool-call rate); waiting and done sessions amble.
+- Every running subagent gets its own pet (same species as its session, always scurrying) and keeps it
+  until its own SubagentStop, even after the parent session has gone idle. A subagent whose stop never
+  arrives is dropped after 15 minutes.
 - Badges: a blinking amber `!` for a permission prompt, green `...` when Claude is waiting for you.
   Done sessions dim after a minute.
 - With no sessions, one dim pet sleeps and nothing ticks. The 12 fps clock runs only while a session
